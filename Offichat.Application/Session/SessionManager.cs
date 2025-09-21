@@ -12,6 +12,22 @@ namespace Offichat.Application.Session
         private readonly ConcurrentDictionary<IPEndPoint, uint> _udpSessionMap = new(); // UDP paket -> SessionId
         private uint _nextSessionId = 1; // Otomatik artan SessionId
 
+        // Timeout ayarları
+        private readonly TimeSpan AFK_TIMEOUT;
+        private readonly TimeSpan SESSION_TIMEOUT;
+
+        // CancellationToken, monitoring task'i için
+        private readonly CancellationToken _cancellationToken;
+
+        public SessionManager(int afkTimeoutSeconds, int sessionTimeoutSeconds, CancellationToken cancellationToken)
+        {
+            AFK_TIMEOUT = TimeSpan.FromSeconds(afkTimeoutSeconds);
+            SESSION_TIMEOUT = TimeSpan.FromSeconds(sessionTimeoutSeconds);
+            _cancellationToken = cancellationToken;
+
+            StartMonitoring();
+        }
+
         // Yeni TCP client bağlandı, UdpClient referansı verilmeli
         public PlayerSession CreateSession(TcpClient tcpClient, UdpClient udpClient)
         {
@@ -63,5 +79,38 @@ namespace Offichat.Application.Session
 
         // Tüm session’ları listeleme (debug)
         public PlayerSession[] GetAllSessions() => _sessions.Values.ToArray();
+
+        // AFK / Timeout kontrolü
+        public void StartMonitoring()
+        {
+            Task.Run(async () =>
+            {
+                while (!_cancellationToken.IsCancellationRequested)
+                {
+                    foreach (var session in _sessions.Values.ToArray())
+                    {
+                        var idleTime = DateTime.UtcNow - session.LastActivity;
+
+                        if (idleTime > SESSION_TIMEOUT)
+                        {
+                            Console.WriteLine($"[Session] Removing session {session.SessionId} due to timeout.");
+                            RemoveSession(session.SessionId);
+                        }
+                        else if (idleTime > AFK_TIMEOUT && !session.IsAfk)
+                        {
+                            session.SetAfk(true);
+                            Console.WriteLine($"[Session] Session {session.SessionId} is now AFK.");
+                        }
+                        else if (idleTime <= AFK_TIMEOUT && session.IsAfk)
+                        {
+                            session.SetAfk(false);
+                            Console.WriteLine($"[Session] Session {session.SessionId} is no longer AFK.");
+                        }
+                    }
+
+                    await Task.Delay(5000, _cancellationToken);
+                }
+            }, _cancellationToken);
+        }
     }
 }

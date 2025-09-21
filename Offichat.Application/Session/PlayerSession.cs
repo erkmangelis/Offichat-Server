@@ -10,18 +10,20 @@ namespace Offichat.Application.Session
     {
         public uint SessionId { get; private set; }
         public TcpClient TcpClient { get; private set; }
-        public IPEndPoint? UdpEndpoint { get; set; }
-        private readonly UdpClient _udpClient;
+        public UdpClient UdpClient { get; private set; }
 
+        public IPEndPoint? UdpEndpoint { get; set; }
         public string? Username { get; set; }
+
         public DateTime ConnectedAt { get; private set; }
-        public DateTime LastActivity { get; private set; }
+        public DateTime LastActivity { get; private set; } = DateTime.UtcNow;
+        public bool IsAfk { get; private set; } = false;
 
         public PlayerSession(uint sessionId, TcpClient tcpClient, UdpClient udpClient)
         {
             SessionId = sessionId;
             TcpClient = tcpClient;
-            _udpClient = udpClient;
+            UdpClient = udpClient;
 
             ConnectedAt = DateTime.UtcNow;
             LastActivity = DateTime.UtcNow;
@@ -30,6 +32,12 @@ namespace Offichat.Application.Session
         public void UpdateActivity()
         {
             LastActivity = DateTime.UtcNow;
+            IsAfk = false;
+        }
+
+        public void SetAfk(bool afk)
+        {
+            IsAfk = afk;
         }
 
         // TCP üzerinden paket gönder
@@ -49,7 +57,7 @@ namespace Offichat.Application.Session
             if (UdpEndpoint != null)
             {
                 byte[] data = packet.ToBytes();
-                await _udpClient.SendAsync(data, data.Length, UdpEndpoint);
+                await UdpClient.SendAsync(data, data.Length, UdpEndpoint);
             }
         }
 

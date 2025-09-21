@@ -8,17 +8,22 @@ namespace Offichat.Application
         public string IP { get; set; } = "127.0.0.1";
         public int TCPPort { get; set; } = 9000;
         public int UDPPort { get; set; } = 9001;
+        public int AfkTimeoutSeconds { get; set; } = 60;
+        public int SessionTimeoutSeconds { get; set; } = 300;
 
         public static ServerConfig Load(string path)
         {
             var json = File.ReadAllText(path);
             var doc = JsonSerializer.Deserialize<JsonDocument>(json);
             var server = doc!.RootElement.GetProperty("Server");
+
             return new ServerConfig
             {
                 IP = server.GetProperty("IP").GetString() ?? "127.0.0.1",
                 TCPPort = server.GetProperty("TCPPort").GetInt32(),
-                UDPPort = server.GetProperty("UDPPort").GetInt32()
+                UDPPort = server.GetProperty("UDPPort").GetInt32(),
+                AfkTimeoutSeconds = server.GetProperty("AfkTimeoutSeconds").GetInt32(),
+                SessionTimeoutSeconds = server.GetProperty("SessionTimeoutSeconds").GetInt32()
             };
         }
     }
