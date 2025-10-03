@@ -87,7 +87,7 @@ namespace Offichat.Application.Session
             {
                 while (!_cancellationToken.IsCancellationRequested)
                 {
-                    foreach (var session in _sessions.Values.ToArray())
+                    foreach (var session in _sessions.Values)
                     {
                         var idleTime = DateTime.UtcNow - session.LastActivity;
 
