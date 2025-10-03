@@ -20,6 +20,9 @@ namespace Offichat.Application.Session
         // CancellationToken, monitoring task'i için
         private readonly CancellationToken _cancellationToken;
 
+        // Batch removal queue
+        private readonly ConcurrentQueue<uint> _sessionsToRemove = new();
+
         public SessionManager(int afkTimeoutSeconds, int sessionTimeoutSeconds, CancellationToken cancellationToken)
         {
             AFK_TIMEOUT = TimeSpan.FromSeconds(afkTimeoutSeconds);
@@ -45,10 +48,8 @@ namespace Offichat.Application.Session
         public PlayerSession? GetSessionByUdp(IPEndPoint endpoint)
         {
             if (_udpSessionMap.TryGetValue(endpoint, out uint sessionId))
-            {
-                if (_sessions.TryGetValue(sessionId, out var session))
-                    return session;
-            }
+                return GetSession(sessionId);
+
             return null;
         }
 
@@ -94,8 +95,8 @@ namespace Offichat.Application.Session
 
                         if (idleTime > SESSION_TIMEOUT)
                         {
-                            Console.WriteLine($"[Session] Removing session {session.SessionId} due to timeout.");
-                            RemoveSession(session.SessionId);
+                            // Batch removal kuyruğuna ekle
+                            _sessionsToRemove.Enqueue(session.SessionId);
                         }
                         else if (idleTime > AFK_TIMEOUT && !session.IsAfk)
                         {
@@ -107,6 +108,13 @@ namespace Offichat.Application.Session
                             session.SetAfk(false);
                             Console.WriteLine($"[Session] Session {session.SessionId} is no longer AFK.");
                         }
+                    }
+
+                    // Batch removal
+                    while (_sessionsToRemove.TryDequeue(out var sessionId))
+                    {
+                        RemoveSession(sessionId);
+                        Console.WriteLine($"[Session] Removed Session {sessionId} due to timeout.");
                     }
 
                     await Task.Delay(5000, _cancellationToken);
