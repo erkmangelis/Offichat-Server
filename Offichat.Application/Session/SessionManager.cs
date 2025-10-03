@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Offichat.Application.Exceptions;
+using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
@@ -35,7 +36,7 @@ namespace Offichat.Application.Session
             var session = new PlayerSession(sessionId, tcpClient, udpClient);
 
             if (!_sessions.TryAdd(sessionId, session))
-                throw new Exception("Failed to add new session");
+                throw new SessionException($"Failed to add new session with id {sessionId}");
 
             return session;
         }
