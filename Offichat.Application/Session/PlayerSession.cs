@@ -14,6 +14,8 @@ namespace Offichat.Application.Session
 
         public IPEndPoint? UdpEndpoint { get; set; }
         public string? Username { get; set; }
+        public int? UserId { get; set; }
+        public int? PlayerId { get; set; }
 
         public DateTime ConnectedAt { get; private set; }
         public DateTime LastActivity { get; private set; } = DateTime.UtcNow;
@@ -72,7 +74,9 @@ namespace Offichat.Application.Session
 
         public override string ToString()
         {
-            return $"Session {SessionId} (User: {Username ?? "Guest"}, TCP: {TcpClient.Client.RemoteEndPoint}, UDP: {UdpEndpoint})";
+            string tcpInfo = TcpClient?.Client?.RemoteEndPoint?.ToString() ?? "Disconnected";
+            string udpInfo = UdpEndpoint?.ToString() ?? "None";
+            return $"Session {SessionId} (User: {Username ?? "Guest"}, TCP: {tcpInfo}, UDP: {udpInfo})";
         }
     }
 }

@@ -1,4 +1,5 @@
 ﻿using Offichat.Application.Exceptions;
+using Offichat.Network;
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
@@ -79,8 +80,56 @@ namespace Offichat.Application.Session
             return session;
         }
 
+        // PlayerId ile session sorgulama
+        public PlayerSession? GetSessionByPlayerId(int playerId)
+        {
+            // PlayerId'si herhangi bir session'da eşleşiyorsa döndür
+            return _sessions.Values.FirstOrDefault(s => s.PlayerId == playerId);
+        }
+
         // Tüm session’ları listeleme (debug)
         public PlayerSession[] GetAllSessions() => _sessions.Values.ToArray();
+
+        // Tüm aktif oyunculara TCP paketi gönder
+        public async Task BroadcastTcpAsync(PacketBase packet)
+        {
+            foreach (var session in _sessions.Values)
+            {
+                // Sadece giriş yapmış (Login olmuş) kullanıcılara gönder
+                if (session.TcpClient.Connected && !string.IsNullOrEmpty(session.Username))
+                {
+                    await session.SendTcpAsync((TCPPacket)packet);
+                }
+            }
+        }
+
+        // Belirli bir oyuncu HARİÇ diğerlerine gönder (Örn: "Ben girdim" paketi bana gelmesin)
+        public async Task BroadcastTcpExceptAsync(PacketBase packet, uint exceptSessionId)
+        {
+            foreach (var session in _sessions.Values)
+            {
+                if (session.SessionId != exceptSessionId && session.TcpClient.Connected && !string.IsNullOrEmpty(session.Username))
+                {
+                    await session.SendTcpAsync((TCPPacket)packet);
+                }
+            }
+        }
+
+        // UDP üzerinden herkese yayın yap (Hareket verisi için)
+        public async Task BroadcastUdpAsync(UDPPacket packet, uint exceptSessionId = 0)
+        {
+            foreach (var session in _sessions.Values)
+            {
+                // 1. Kendime geri gönderme (Client Prediction varsa gerek yok)
+                if (session.SessionId == exceptSessionId) continue;
+
+                // 2. Sadece UDP bağlantısı kurmuş (Handshake yapmış) ve Login olmuş oyunculara
+                if (session.UdpEndpoint != null && !string.IsNullOrEmpty(session.Username))
+                {
+                    await session.SendUdpAsync(packet);
+                }
+            }
+        }
 
         // AFK / Timeout kontrolü
         public void StartMonitoring()

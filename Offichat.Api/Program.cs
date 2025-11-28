@@ -1,14 +1,13 @@
-﻿using Offichat.Application;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Offichat.Application;
 using Offichat.Application.Handlers;
+using Offichat.Domain.Interfaces;
 using Offichat.Application.PacketRouting;
 using Offichat.Application.Session;
+using Offichat.Infrastructure.Persistence;
+using Offichat.Infrastructure.Services;
 using Offichat.Network;
-using System;
-using System.Linq;
-using System.Net;
-using System.Reflection;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace Offichat.Api
 {
@@ -18,44 +17,83 @@ namespace Offichat.Api
         {
             Console.WriteLine("[Offichat] Server starting...");
 
-            // Konfigürasyon yükle
+            // 1. Konfigürasyonu Yükle
             var config = ServerConfig.Load("appsettings.json");
 
-            // İptal tokeni ve Ctrl+C yakalama
-            using var cts = new CancellationTokenSource();
+            // 2. Servis Konteynerini Hazırla (Dependency Injection)
+            var services = new ServiceCollection();
+
+            // -- Database Bağlantısı --
+            services.AddDbContext<OffichatDbContext>(options =>
+            {
+                options.UseNpgsql(config.ConnectionString);
+            }, ServiceLifetime.Scoped);
+            // Not: Handler'lar her paket için yeniden çağrılmayıp memoryde tutuluyorsa Scoped yerine Transient gerekebilir, 
+            // ama PacketRouter yapısına göre Singleton handler kullanıyorsak DbContext Factory kullanmalıyız.
+            // *Basitlik için* şimdilik Handler'ları Transient (her istekte yeni) yapalım.
+
+            // Şifreleme servisini ekle
+            services.AddSingleton<IPasswordHasher, PasswordHasher>();
+
+            // -- Core Servisler --
+            services.AddSingleton(config);
+            services.AddSingleton<PacketRouter>();
+
+            // SessionManager Singleton olmalı (Tüm sunucu için tek)
+            services.AddSingleton<SessionManager>(sp =>
+                new SessionManager(config.AfkTimeoutSeconds, config.SessionTimeoutSeconds, sp.GetRequiredService<CancellationTokenSource>().Token));
+
+            services.AddSingleton<CancellationTokenSource>();
+
+            // -- Handler'ları Otomatik Bul ve Kaydet --
+            var handlerType = typeof(IPacketHandler);
+            var handlerImplementationTypes = handlerType.Assembly
+                                      .GetTypes()
+                                      .Where(t => handlerType.IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
+
+            foreach (var type in handlerImplementationTypes)
+            {
+                // Handler'ları Transient ekliyoruz ki her ihtiyaç duyulduğunda DbContext'i taze alabilsinler
+                services.AddTransient(handlerType, type);
+                // Ayrıca kendisi olarak da kaydedelim (Reflection ile bulurken kolaylık olsun diye)
+                services.AddTransient(type);
+            }
+
+            // 3. Provider'ı İnşa Et
+            var serviceProvider = services.BuildServiceProvider();
+
+            // İptal tokeni (Ctrl+C için)
+            var cts = serviceProvider.GetRequiredService<CancellationTokenSource>();
             Console.CancelKeyPress += (s, e) =>
             {
                 e.Cancel = true;
                 cts.Cancel();
             };
 
-            var sessionManager = new SessionManager(config.AfkTimeoutSeconds, config.SessionTimeoutSeconds, cts.Token);
-            var packetRouter = new PacketRouter();
-
-            // IPacketHandler implementasyonlarını otomatik register et
-            var handlerType = typeof(IPacketHandler);
-            var handlers = handlerType.Assembly
-                                      .GetTypes()
-                                      .Where(t => handlerType.IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
-
-            foreach (var type in handlers)
+            // 4. Handler'ları Router'a Kaydet
+            var packetRouter = serviceProvider.GetRequiredService<PacketRouter>();
+            foreach (var type in handlerImplementationTypes)
             {
                 try
                 {
-                    var instance = (IPacketHandler)Activator.CreateInstance(type)!;
-                    packetRouter.RegisterHandler(instance);
-                    Console.WriteLine($"[Router] Registered handler: {type.FullName} for PacketId={instance.PacketId}");
+                    // Artık Activator yerine serviceProvider kullanıyoruz!
+                    // Böylece LoginHandler(OffichatDbContext db) constructor'ı çalışabilecek.
+                    var handlerInstance = (IPacketHandler)serviceProvider.GetRequiredService(type);
+                    packetRouter.RegisterHandler(handlerInstance);
+                    Console.WriteLine($"[Router] Registered handler: {type.Name} for PacketId={handlerInstance.PacketId}");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[Router] Failed to register {type.FullName}: {ex.Message}");
+                    Console.WriteLine($"[Router] Failed to register {type.Name}: {ex.Message}");
                 }
             }
 
+            // 5. Network Listener'ları Başlat
             var tcpManager = new TCPListenerManager(config.IP, config.TCPPort);
             var udpManager = new UDPListenerManager(config.IP, config.UDPPort);
+            var sessionManager = serviceProvider.GetRequiredService<SessionManager>();
 
-            // TCP events
+            // TCP Events
             tcpManager.OnClientConnected += client =>
             {
                 var session = sessionManager.CreateSession(client, udpManager.UdpClient);
@@ -64,9 +102,7 @@ namespace Offichat.Api
 
             tcpManager.OnClientDisconnected += client =>
             {
-                var session = sessionManager.GetAllSessions()
-                    .FirstOrDefault(s => s.TcpClient == client);
-
+                var session = sessionManager.GetAllSessions().FirstOrDefault(s => s.TcpClient == client);
                 if (session != null)
                 {
                     sessionManager.RemoveSession(session.SessionId);
@@ -76,62 +112,44 @@ namespace Offichat.Api
 
             tcpManager.OnPacketReceived += async (client, packet) =>
             {
-                var session = sessionManager.GetAllSessions()
-                    .FirstOrDefault(s => s.TcpClient == client);
-
+                var session = sessionManager.GetAllSessions().FirstOrDefault(s => s.TcpClient == client);
                 if (session != null)
                 {
                     session.UpdateActivity();
+                    // Router'a gönder
                     await packetRouter.RouteAsync(packet, session);
                 }
             };
 
-            // UDP events
+            // UDP Events
             udpManager.OnPacketReceived += async (remoteEndPoint, packet) =>
             {
                 var session = sessionManager.GetSessionByUdp(remoteEndPoint);
-
                 if (session == null)
                 {
                     session = sessionManager.GetSession(packet.SessionId);
-                    if (session != null)
+                    if (session != null && !string.IsNullOrEmpty(session.Username)) // Login kontrolü Username yerine Player nesnesiyle yapılacak ilerde
                     {
-                        if (string.IsNullOrEmpty(session.Username))
-                        {
-                            Console.WriteLine($"[UDP] Ignoring packet from {remoteEndPoint} (not logged in)");
-                            return;
-                        }
-
                         sessionManager.BindUdp(session, remoteEndPoint);
-                        Console.WriteLine($"[UDP] Bound endpoint {remoteEndPoint} -> Session {session.SessionId}");
                     }
                     else
                     {
-                        Console.WriteLine($"[UDP] Unknown session for {remoteEndPoint}, ignoring.");
-                        return;
+                        return; // Tanımsız paket
                     }
                 }
-
                 session.UpdateActivity();
                 await packetRouter.RouteAsync(packet, session);
             };
 
-            // Başlat
+            // Start
             tcpManager.Start(cts.Token);
             udpManager.Start(cts.Token);
 
             Console.WriteLine("[Offichat] Server started. Press Ctrl+C to stop...");
+            try { await Task.Delay(Timeout.Infinite, cts.Token); } catch (TaskCanceledException) { }
 
-            try
-            {
-                await Task.Delay(Timeout.Infinite, cts.Token);
-            }
-            catch (TaskCanceledException) { }
-
-            // Stop
             tcpManager.Stop();
             udpManager.Stop();
-
             Console.WriteLine("[Offichat] Server stopped.");
         }
     }

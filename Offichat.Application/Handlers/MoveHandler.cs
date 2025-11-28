@@ -1,41 +1,73 @@
-﻿using System;
-using System.Text;
-using System.Threading.Tasks;
+﻿using Offichat.Application.DTOs;
+using Offichat.Application.PacketRouting;
 using Offichat.Application.Session;
 using Offichat.Network;
-using Offichat.Application.PacketRouting;
+using System.Text;
+using System.Text.Json;
 
 namespace Offichat.Application.Handlers
 {
     public class MoveHandler : IPacketHandler
     {
-        public ushort PacketId => 2; // Örnek: Move Packet
+        public ushort PacketId => 2; // Move Packet ID
+
+        private readonly SessionManager _sessionManager;
+
+        public MoveHandler(SessionManager sessionManager)
+        {
+            _sessionManager = sessionManager;
+        }
 
         public async Task HandleAsync(PacketBase packet, PlayerSession session)
         {
-            // Payload: "x;y;z" gibi bir string (2D veya 3D koordinatlar)
-            var payloadStr = packet.GetPayloadAsString();
-            var parts = payloadStr.Split(';');
-            if (parts.Length >= 2)
+            try
             {
-                float x = float.Parse(parts[0]);
-                float y = float.Parse(parts[1]);
-                float z = parts.Length >= 3 ? float.Parse(parts[2]) : 0;
+                // UDP paketleri hızlı gelir, hata olursa loglamaya gerek yok (Fire & Forget)
+                var jsonString = packet.GetPayloadAsString();
 
-                Console.WriteLine($"[MoveHandler] Session {session.SessionId} moved to ({x},{y},{z})");
+                // 1. Gelen Veriyi Oku
+                // Client sadece { X, Y, Anim, FlipH } gönderir.
+                var incomingData = JsonSerializer.Deserialize<MovePayload>(jsonString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-                // Örnek: client’a konum onayı gönder
-                var responsePayload = $"ACK:{x};{y};{z}";
-                var response = new UDPPacket(
-                    packet.PacketId,
+                if (incomingData == null) return;
+
+                // --- GÜVENLİK VE DOĞRULAMA (Opsiyonel) ---
+                // Buraya ileride "Hız Kontrolü" (Speed Hack Check) ekleyebiliriz.
+                // Şimdilik gelen veriyi güvenilir kabul ediyoruz.
+
+                // 2. Yayınlanacak Veriyi Hazırla
+                var broadcastData = new MovePayload
+                {
+                    // ÖNEMLİ: PlayerId'yi session'dan biz ekliyoruz. 
+                    // Client "Ben ID:5'im" dese bile inanmayız, session neyse odur.
+                    PlayerId = session.PlayerId ?? 0,
+
+                    X = incomingData.X,
+                    Y = incomingData.Y,
+                    Anim = incomingData.Anim,
+                    Direction = incomingData.Direction
+                };
+
+                // PlayerId yoksa (Login olmamışsa) yayına gerek yok
+                if (broadcastData.PlayerId == 0) return;
+
+                // 3. Herkese Yay (UDP Broadcast)
+                string broadcastJson = JsonSerializer.Serialize(broadcastData);
+
+                // Sequence Number (0) ve Timestamp (0) şimdilik varsayılan.
+                // İleride Godot tarafında interpolasyon için Timestamp ekleyebiliriz.
+                var udpPacket = new UDPPacket(
+                    2, // Move Packet ID
                     session.SessionId,
-                    Encoding.UTF8.GetBytes(responsePayload),
-                    sequenceNumber: 0,
-                    timestamp: (uint)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    Encoding.UTF8.GetBytes(broadcastJson)
                 );
 
-                if (session.UdpEndpoint != null)
-                    await session.SendUdpAsync(response);
+                // Kendim hariç herkese gönder (Çünkü ben zaten oradayım)
+                await _sessionManager.BroadcastUdpAsync(udpPacket, session.SessionId);
+            }
+            catch
+            {
+                // UDP hatalarını yutuyoruz, oyun akışını kesmesin.
             }
         }
     }
