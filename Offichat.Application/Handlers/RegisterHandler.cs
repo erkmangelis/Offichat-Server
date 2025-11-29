@@ -85,7 +85,14 @@ namespace Offichat.Application.Handlers
 
         private async Task SendResponse(PlayerSession session, string message)
         {
-            var response = new TCPPacket((byte)PacketId, session.SessionId, Encoding.UTF8.GetBytes(message));
+            var responsePayload = new
+            {
+                Message = message // "Register OK" veya "Error: ..."
+            };
+
+            string json = JsonSerializer.Serialize(responsePayload);
+            var response = new TCPPacket((byte)PacketId, session.SessionId, Encoding.UTF8.GetBytes(json));
+
             await session.SendTcpAsync(response);
         }
     }

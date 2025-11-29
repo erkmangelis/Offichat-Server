@@ -7,6 +7,10 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+	  <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\Offichat.Domain\Offichat.Domain.csproj" />
 		<ProjectReference Include="..\Offichat.Infrastructure\Offichat.Infrastructure.csproj" />
 		<ProjectReference Include="..\Offichat.Network\Offichat.Network.csproj" />
