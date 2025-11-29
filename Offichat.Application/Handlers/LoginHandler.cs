@@ -7,6 +7,7 @@ using Offichat.Infrastructure.Persistence;
 using Offichat.Network;
 using System.Text;
 using System.Text.Json;
+using Offichat.Application.Enums;
 
 namespace Offichat.Application.Handlers
 {
@@ -29,7 +30,7 @@ namespace Offichat.Application.Handlers
         {
             try
             {
-                // 1. Paketi Çöz (Deserialize)
+                // --- 1. PAKETİ ÇÖZ (DESERIALIZE) ---
                 var jsonString = packet.GetPayloadAsString();
                 var payload = JsonSerializer.Deserialize<LoginPayload>(jsonString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
@@ -39,100 +40,111 @@ namespace Offichat.Application.Handlers
                     return;
                 }
 
-                // 2. Kullanıcıyı Bul (User tablosu)
-                // Oyuncu verisini (Player) de dahil ediyoruz (Include) çünkü görünüm bilgisi lazım olabilir.
+                // --- 2. KULLANICIYI BUL (DB) ---
+                // Appearance verisi için Players tablosunu da çekiyoruz
                 var user = await _context.Users
                                          .Include(u => u.Players)
                                          .FirstOrDefaultAsync(u => u.Username == payload.Username);
 
                 if (user == null)
                 {
-                    // Güvenlik: "Kullanıcı bulunamadı" demek yerine genel hata dönmek brute-force'u zorlaştırır.
                     await SendError(session, "Invalid username or password");
                     return;
                 }
 
-                // 3. Şifreyi Doğrula
+                // --- 3. ŞİFREYİ DOĞRULA ---
                 if (!_passwordHasher.VerifyPassword(payload.Password, user.PasswordHash))
                 {
                     await SendError(session, "Invalid username or password");
                     return;
                 }
 
-                // Kullanıcının ana karakterini bul (Şimdilik ilk karakteri alıyoruz)
+                // Kullanıcının ana karakterini bul
                 var mainPlayer = user.Players.FirstOrDefault();
 
-                // 4. Oturumu Başlat (Session Update)
+                // --- 4. OTURUMU GÜNCELLE (SESSION UPDATE) ---
                 session.Username = user.Username;
                 session.UserId = user.Id;
                 session.PlayerId = mainPlayer?.Id;
+                session.DisplayName = mainPlayer?.DisplayName;
+
+                // Cache (RAM) Verilerini Hazırla
+                session.AppearanceData = mainPlayer?.AppearanceData;
+                session.X = 0; // Spawn noktası X
+                session.Y = 0; // Spawn noktası Y
+                session.Anim = AnimationState.Idle; // Varsayılan Animasyon
+                session.Direction = Direction.Down; // Varsayılan Yön
+
                 session.UpdateActivity();
 
                 Console.WriteLine($"[Login] Success: {user.Username} (Player ID: {mainPlayer?.Id})");
 
-                // 5. Cevap Gönder
-                // İstemciye oyuncunun görünüm bilgisini (AppearanceData) de geri dönelim ki kendi karakterini oluşturabilsin.
+                // --- 5. CEVAP GÖNDER (LOGIN OK) ---
                 var responsePayload = new
                 {
                     Message = "Login OK",
                     PlayerId = mainPlayer?.Id ?? 0,
                     DisplayName = mainPlayer?.DisplayName,
-                    Appearance = mainPlayer?.AppearanceData // JSON string olarak gider
+                    Appearance = mainPlayer?.AppearanceData // Client karakteri oluşturabilsin diye
                 };
 
                 string responseJson = JsonSerializer.Serialize(responsePayload);
                 var responsePacket = new TCPPacket((byte)PacketId, session.SessionId, Encoding.UTF8.GetBytes(responseJson));
                 await session.SendTcpAsync(responsePacket);
 
-                // 6. Diğerlerine "Ben Geldim" de (PacketId: 4 olsun - Spawn)
-                var spawnPayload = new SpawnPayload
+                // --- 6. BROADCAST: DİĞERLERİNE HABER VER (SPAWN) ---
+                if (mainPlayer != null)
                 {
-                    PlayerId = mainPlayer?.Id ?? 0,
-                    DisplayName = mainPlayer?.DisplayName,
-                    Appearance = mainPlayer?.AppearanceData,
-                    X = 0, // Ofis kapı girişi koordinatı
-                    Y = 0
-                };
-
-                string spawnJson = JsonSerializer.Serialize(spawnPayload);
-                var spawnPacket = new TCPPacket(4, session.SessionId, Encoding.UTF8.GetBytes(spawnJson)); // Packet ID 4: Spawn
-
-                // Kendim hariç herkese gönder
-                await _sessionManager.BroadcastTcpExceptAsync(spawnPacket, session.SessionId);
-
-                Console.WriteLine($"[Login] Broadcasted spawn for {mainPlayer?.DisplayName}");
-
-                // 7. İçerideki diğer oyuncuları BANA gönder
-                // Mevcut sessionları geziyoruz
-                var otherSessions = _sessionManager.GetAllSessions();
-                foreach (var otherSession in otherSessions)
-                {
-                    // Kendim değilsem ve login olmuşsa
-                    if (otherSession.SessionId != session.SessionId && otherSession.PlayerId.HasValue)
+                    var spawnPayload = new SpawnPayload
                     {
-                        // O oyuncunun verisini veritabanından çekmek yerine
-                        // Session üstünde Appearance tutabiliriz (Performans için) 
-                        // AMA şimdilik veritabanından çekelim (Basitlik için)
+                        PlayerId = mainPlayer.Id,
+                        DisplayName = mainPlayer.DisplayName,
+                        Appearance = mainPlayer.AppearanceData,
+                        X = 0,
+                        Y = 0,
+                        Anim = AnimationState.Idle,
+                        Direction = Direction.Down
+                    };
 
-                        // Küçük bir performans uyarısı: Burada döngü içinde DB sorgusu var. 
-                        // İleride bunu optimize edeceğiz (Cache veya Session'da data tutarak).
-                        var otherPlayer = await _context.Players.FindAsync(otherSession.PlayerId.Value);
-                        if (otherPlayer != null)
+                    string spawnJson = JsonSerializer.Serialize(spawnPayload);
+                    var spawnPacket = new TCPPacket(4, session.SessionId, Encoding.UTF8.GetBytes(spawnJson)); // Packet ID 4: Spawn
+
+                    // Kendim hariç herkese gönder
+                    await _sessionManager.BroadcastTcpExceptAsync(spawnPacket, session.SessionId);
+                    Console.WriteLine($"[Login] Broadcasted spawn for {mainPlayer.DisplayName}");
+
+                    // --- 7. INITIAL STATE SYNC: MEVCUT OYUNCULARI AL ---
+                    // "Odaya girdiğimde içeride kimler vardı?"
+
+                    var activeSessions = _sessionManager.GetAllSessions();
+
+                    foreach (var otherSession in activeSessions)
+                    {
+                        // Kendim değilsem VE giriş yapmış (karakteri olan) biriyse
+                        if (otherSession.SessionId != session.SessionId && otherSession.PlayerId.HasValue)
                         {
-                            var otherUserSpawn = new SpawnPayload
+                            // OPTİMİZASYON: Veritabanına gitmiyoruz!
+                            // Session nesnesindeki "son bilinen" (Cached) değerleri kullanıyoruz.
+
+                            var existingPlayerSpawn = new SpawnPayload
                             {
-                                PlayerId = otherPlayer.Id,
-                                DisplayName = otherPlayer.DisplayName,
-                                Appearance = otherPlayer.AppearanceData,
-                                X = 0, // İleride anlık konumunu session'dan alacağız
-                                Y = 0
+                                PlayerId = otherSession.PlayerId.Value,
+                                DisplayName = otherSession.DisplayName ?? "Unknown",
+                                Appearance = otherSession.AppearanceData ?? "{}",
+
+                                // Session'daki anlık konum ve durum
+                                X = otherSession.X,
+                                Y = otherSession.Y,
+                                Anim = otherSession.Anim,
+                                Direction = otherSession.Direction
                             };
 
-                            string otherJson = JsonSerializer.Serialize(otherUserSpawn);
-                            var otherPacket = new TCPPacket(4, session.SessionId, Encoding.UTF8.GetBytes(otherJson));
+                            string existingPlayerJson = JsonSerializer.Serialize(existingPlayerSpawn);
 
-                            // Sadece BANA gönder
-                            await session.SendTcpAsync(otherPacket);
+                            // Packet ID 4 (Spawn) olarak BANA gönder
+                            var packetForMe = new TCPPacket(4, session.SessionId, Encoding.UTF8.GetBytes(existingPlayerJson));
+
+                            await session.SendTcpAsync(packetForMe);
                         }
                     }
                 }

@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using Offichat.Application.Enums;
 
 namespace Offichat.Application.DTOs
 {
@@ -13,7 +11,7 @@ namespace Offichat.Application.DTOs
         public float Y { get; set; }
 
         // Görünüm Durumu
-        public string Anim { get; set; } = "idle"; // Örn: "idle", "walk", "sit"
-        public string Direction { get; set; } = "right"; // Örn: "right, "left", "up", "down"
+        public AnimationState Anim { get; set; } = AnimationState.Idle;
+        public Direction Direction { get; set; } = Direction.Right;
     }
 }

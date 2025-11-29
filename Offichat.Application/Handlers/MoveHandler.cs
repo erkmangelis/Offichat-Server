@@ -35,7 +35,14 @@ namespace Offichat.Application.Handlers
                 // Buraya ileride "Hız Kontrolü" (Speed Hack Check) ekleyebiliriz.
                 // Şimdilik gelen veriyi güvenilir kabul ediyoruz.
 
-                // 2. Yayınlanacak Veriyi Hazırla
+                // --- 2. CACHE GÜNCELLEME ---
+                // Sunucu hafızasındaki konumu güncelle
+                session.X = incomingData.X;
+                session.Y = incomingData.Y;
+                session.Anim = incomingData.Anim;
+                session.Direction = incomingData.Direction;
+
+                // 3. Yayınlanacak Veriyi Hazırla
                 var broadcastData = new MovePayload
                 {
                     // ÖNEMLİ: PlayerId'yi session'dan biz ekliyoruz. 

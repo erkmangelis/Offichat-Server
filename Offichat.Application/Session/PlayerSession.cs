@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Net;
 using System.Net.Sockets;
-using System.Threading.Tasks;
+using Offichat.Application.Enums;
 using Offichat.Network;
 
 namespace Offichat.Application.Session
@@ -13,9 +13,17 @@ namespace Offichat.Application.Session
         public UdpClient UdpClient { get; private set; }
 
         public IPEndPoint? UdpEndpoint { get; set; }
-        public string? Username { get; set; }
-        public int? UserId { get; set; }
-        public int? PlayerId { get; set; }
+            public string? Username { get; set; }
+            public int? UserId { get; set; }
+            public int? PlayerId { get; set; }
+            public string? DisplayName { get; set; }
+            public string? AppearanceData { get; set; }
+
+            // Son bilinen konum ve durum (RAM Cache)
+            public float X { get; set; } = 0;
+            public float Y { get; set; } = 0;
+            public AnimationState Anim { get; set; } = AnimationState.Idle;
+            public Direction Direction { get; set; } = Direction.Down;
 
         public DateTime ConnectedAt { get; private set; }
         public DateTime LastActivity { get; private set; } = DateTime.UtcNow;
