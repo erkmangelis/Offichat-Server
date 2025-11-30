@@ -100,13 +100,35 @@ namespace Offichat.Api
                 Console.WriteLine($"[TCP] Client connected: {session}");
             };
 
-            tcpManager.OnClientDisconnected += client =>
+            tcpManager.OnClientDisconnected += async client =>
             {
-                var session = sessionManager.GetAllSessions().FirstOrDefault(s => s.TcpClient == client);
+                var session = sessionManager.GetAllSessions()
+                    .FirstOrDefault(s => s.TcpClient == client);
+
                 if (session != null)
                 {
+                    // 1. Session'ı listeden sil (Artık mesaj alamaz)
                     sessionManager.RemoveSession(session.SessionId);
-                    Console.WriteLine($"[TCP] Client disconnected: {session}");
+                    Console.WriteLine($"[TCP] Client disconnected: {session.Username ?? "Guest"} (PlayerId: {session.PlayerId})");
+
+                    // 2. Eğer oyunda olan (PlayerId'si olan) biri çıktıysa, diğerlerine haber ver
+                    if (session.PlayerId.HasValue)
+                    {
+                        var despawnPayload = new Offichat.Application.DTOs.DespawnPayload
+                        {
+                            PlayerId = session.PlayerId.Value
+                        };
+
+                        string json = System.Text.Json.JsonSerializer.Serialize(despawnPayload);
+
+                        // Packet ID: 6 (Despawn)
+                        // TCPPacket namespace'ini eklemeyi unutmayın: using Offichat.Network;
+                        var packet = new TCPPacket(6, session.SessionId, System.Text.Encoding.UTF8.GetBytes(json));
+
+                        // Kalan herkese gönder
+                        await sessionManager.BroadcastTcpAsync(packet);
+                        Console.WriteLine($"[Server] Broadcasted Despawn for Player {session.PlayerId}");
+                    }
                 }
             };
 
